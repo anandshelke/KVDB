@@ -1,29 +1,31 @@
+drop procedure sp_discharge_Prepare;
+
 DELIMITER $$
-CREATE DEFINER=`anand`@`localhost` PROCEDURE `sp_discharge_Prepare`(
+CREATE PROCEDURE `sp_discharge_Prepare`(
 In In_patientId varchar(50),
-In In_DischargeDate date
+In In_DischargeDate varchar(30)
 )
 Begin
 
-declare _dailyStayCharges, _depositCharges, _monthlyAdvanceAmount, _advanceAmount, _amountPaid, _newMonthlyAdvanceAmount double;
+declare _dailyStayCharges, _depositCharges, _monthlyAdvanceAmount, _amountPaid double;
+declare  _advanceAmount double default 0;
+declare _newMonthlyAdvanceAmount double default 0;
 declare _monthlyInvoiceFromDate, _monthlyInvoiceTodate date;
 declare _admissionDate date;
 declare _daysElapsed, _daysLeft INT;
 declare _monthlyInvoiceId, _monthlyInvoiceStatus varchar(50);
 declare _firstMonthDischarge boolean default false; -- 2023-bug-4
 
+declare _dischargeDate varchar(30);
 
--- declare _cntMonthlyPaidInvoice, _MonthlyInvoiceCreated, _MonthlyInvoicePaid INT default 0;    
--- declare _balancedMonthlyAdvance, _totalBalanceAmount, _unPaidInvoiceAmount, _newMonthlyAdvanceAmount, PartiallyPaidMonthlyAdvance  double;
--- declare _admRegAmount double;
--- declare _userLocation,_monthlyInvoiceId varchar(50);
--- declare _firstMonthDischarge boolean default false; -- 2023-bug-4
--- declare _remainingBalance double default 0; -- 2023-bug-5
+call sp_discharge_CreateLog(In_patientId, 'Start of the discharge process', 'Discharge Preparation');
+
+set _dischargeDate = str_to_date(In_DischargeDate,'%Y-%m-%d');
+select depositCharges,  monthlyStayCharges into _depositCharges, _dailyStayCharges from patientmaster where patientid = In_patientId;
 
 
 -- mark the patient for discharge
-call sp_discharge_MarkPatientForDischarge(In_patientId,In_DischargeDate );
-
+call sp_discharge_MarkPatientForDischarge(In_patientId,_dischargeDate );
 
 -- Get all the invoices for the patient updated
 call sp_UpdatePateintInvoiceParams(In_patientId);
@@ -43,36 +45,42 @@ order by invoicetodate desc limit 1;
 select sum(paymentAmount) into _amountPaid from invoicepayment where invoiceid = _monthlyInvoiceId;
 
 -- Check if the recent monthly invoice is raised
-if In_DischargeDate not between _monthlyInvoiceFromDate and _monthlyInvoiceTodate then
-	call sp_discharge_CreateLog(In_patientId, 'LOG','No Recent Monthly Invoice Foundfor the current period. Raise current Monthly Invoice', 'Discharge Preparation');
+if _dischargeDate not between _monthlyInvoiceFromDate and _monthlyInvoiceTodate then
+	call sp_discharge_CreateLog(In_patientId,'No Recent Monthly Invoice found for the current period. Raise current Monthly Invoice', 'Discharge Preparation');
 else
 -- Calculated days elapsed (spent) and days left
 -- For this date calculation check the admission and discharge month to count correct days elapsed
-if (month(_admissionDate) = month(In_DischargeDate) AND year(_admissionDate) = year(In_DischargeDate)) then
-	SELECT DATEDIFF(In_DischargeDate, _admissionDate) + 1, DATEDIFF(_monthlyInvoiceTodate, In_DischargeDate) INTO _daysElapsed , _daysLeft;  
+if (month(_admissionDate) = month(_dischargeDate) AND year(_admissionDate) = year(_dischargeDate)) then
+	SELECT DATEDIFF(_dischargeDate, _admissionDate) + 1, DATEDIFF(_monthlyInvoiceTodate, _dischargeDate) INTO _daysElapsed , _daysLeft;  
 	set _firstMonthDischarge  = true; -- 2023-bug-4
 else
 	set _firstMonthDischarge  = false; -- 2023-bug-
-	select DATEDIFF(In_DischargeDate, _monthlyInvoiceFromDate) + 1, DATEDIFF(_monthlyInvoiceTodate, In_DischargeDate) INTO _daysElapsed , _daysLeft ;
+	select DATEDIFF(_dischargeDate, _monthlyInvoiceFromDate) + 1, DATEDIFF(_monthlyInvoiceTodate, _dischargeDate) INTO _daysElapsed , _daysLeft ;
 end if;
 
-call sp_discharge_CreateLog(In_patientId, 'LOG',concat('Number of stay days =',cast(_daysElapsed as char), ' and days remaining =', cast(_daysLeft as char)), 'Discharge Preparation');
+call sp_discharge_CreateLog(In_patientId, concat('Number of stay days =',cast(_daysElapsed as char), ' and days remaining =', cast(_daysLeft as char)), 'Discharge Preparation');
 
 -- calculate updated montly invoice amount based on the discharge date
 set _newMonthlyAdvanceAmount =  _monthlyAdvanceAmount - (_daysElapsed * _dailyStayCharges);
-call sp_discharge_CreateLog(In_patientId, 'LOG',concat('Adjusted monthly amount =',cast(_newMonthlyAdvanceAmount as char)), 'Discharge Preparation');
+
+call sp_discharge_CreateLog(In_patientId, concat('Adjusted monthly amount ',cast(_newMonthlyAdvanceAmount as char)), 'Discharge Preparation');
    
 -- Update monthly invoice based on days and daily stay charges 
 update invoicemaster 
-set invoiceamount = _newMonthlyAdvanceAmount, invocieToDate = In_DischargeDate, balance = _newMonthlyAdvanceAmount -_amountPaid,
+set invoiceamount = _newMonthlyAdvanceAmount, invoiceToDate = _dischargeDate, balanceAmount = _newMonthlyAdvanceAmount -_amountPaid,
 notes = concat(notes, '. ', now(), ' - ','Adjusted amount and date for monthly invoice - ', _monthlyInvoiceId,' during discharge process')
 where  patientid = In_patientId and invoiceid = _monthlyInvoiceId;
 
+call sp_discharge_CreateLog(In_patientId, concat('Updated invoice  amount of monthly invoice  ',_monthlyInvoiceId, 'to ', cast(_newMonthlyAdvanceAmount as char)), 'Discharge Preparation');
+call sp_discharge_CreateLog(In_patientId, concat('Updated To Date of monthly invoice ',_monthlyInvoiceId, 'to ', cast(_dischargeDate as char)), 'Discharge Preparation');
+
 -- update ToDate of all other and physio invoices to the DoD 
--- We need to update correct forenightly invoices hence In_DischargeDate < invoiceToDate;
-Update invoicemaster set invoicetodate = In_DischargeDate, notes = concat(notes, '. ', now(), ' - ','Adjusted invoice ToDate during discharge process')
+-- We need to update correct forenightly invoices hence _dischargeDate < invoiceToDate;
+Update invoicemaster set invoicetodate = _dischargeDate, notes = concat(notes, '. ', now(), ' - ','Adjusted invoice ToDate during discharge process')
 where patientid = In_patientId and 
-In_DischargeDate >= invoiceFromDate and In_DischargeDate < invoiceToDate;
+_dischargeDate >= invoiceFromDate and _dischargeDate < invoiceToDate;
+
+call sp_discharge_CreateLog(In_patientId, concat('Updated To Dates of other and physio invoices to ', cast(_dischargeDate as char)), 'Discharge Preparation');
 
 call sp_UpdateInvoiceParams(_monthlyInvoiceId);
 
@@ -92,19 +100,21 @@ if strcmp(_monthlyInvoiceStatus,"Partial") = 0 then
 	end if;
 end if;
 
+call sp_discharge_CreateLog(In_patientId, concat('Created advance payment entry of  ', cast(_advanceAmount as char), ' as advance payment'), 'Discharge Preparation');
+
 -- create deposit amount as advance payment record do that it is available for settlement of invoices
-select depositCharges into _depositCharges from patientmaster where patientid = In_patientId;
-
 if _depositCharges > 0 then 
-	call sp_CreateAdvancePayment(In_patientId, null, 'Discharge',_depositCharges, curdate(),null,null,null,null,null,null,'Discharge', 'Created from deposit charged for settlement', 'sp_discharge_Prepare');
-	call sp_discharge_CreateLog(In_patientId, 'LOG',concat('Advance payment created from Deposit amount of Rs.',cast(_depositCharges as char)), 'Discharge Preparation');
+	call sp_CreateAdvancePayment(In_patientId, null, 'Deposit',_depositCharges, curdate(),null,null,null,null,null,null,'Discharge', 'Created from deposit charged for settlement', 'sp_discharge_Prepare');
+	call sp_discharge_CreateLog(In_patientId, concat('Advance payment created from Deposit amount of Rs.',cast(_depositCharges as char)), 'Discharge Preparation');
+else
+	call sp_discharge_CreateLog(In_patientId, 'Deposit amount is zero and hence cannot use it for settlement', 'Discharge Preparation');
 end if;
 
 
 end if;
 
 
-
+call sp_discharge_CreateLog(In_patientId, 'End of the discharge process', 'Discharge Preparation');
 
 
 END$$
