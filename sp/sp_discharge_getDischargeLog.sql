@@ -1,5 +1,5 @@
 DELIMITER $$
-CREATE DEFINER=`anand`@`localhost` PROCEDURE `sp_discharge_getDischargeLog`(
+CREATE PROCEDURE `sp_discharge_getDischargeLog`(
 In_patientId varchar(50)
 )
 begin

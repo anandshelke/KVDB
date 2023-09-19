@@ -1,5 +1,3 @@
-drop procedure sp_discharge_Prepare;
-
 DELIMITER $$
 CREATE PROCEDURE `sp_discharge_Prepare`(
 In In_patientId varchar(50),

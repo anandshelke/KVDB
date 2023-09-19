@@ -1,5 +1,5 @@
 DELIMITER $$
-CREATE DEFINER=`anand`@`localhost` PROCEDURE `sp_discharge_MarkPatientForDischarge`(
+CREATE PROCEDURE `sp_discharge_MarkPatientForDischarge`(
   IN In_patientId varchar(50),
   In In_DischargeDate date
 )
